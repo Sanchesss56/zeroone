@@ -204,17 +204,42 @@
   function saveTotals(t){ localStorage.setItem(STORE_KEY, JSON.stringify(t)); }
 
   // --- Network: global totals via CountAPI ---
+  const COUNT_BASES = ['https://api.countapi.xyz','https://countapi.xyz'];
+
+  async function countapiFetch(path){
+    let lastErr;
+    for(const base of COUNT_BASES){
+      try{
+        const r = await fetch(base + path, { cache:'no-store' });
+        if(r.ok) return await r.json();
+        lastErr = new Error('HTTP '+r.status);
+      }catch(e){ lastErr = e; }
+    }
+    throw lastErr || new Error('countapi failed');
+  }
+  async function countapiHit(path){
+    let lastErr;
+    for(const base of COUNT_BASES){
+      try{
+        const r = await fetch(base + path, { method:'GET' });
+        if(r.ok) return await r.json();
+        lastErr = new Error('HTTP '+r.status);
+      }catch(e){ lastErr = e; }
+    }
+    throw lastErr || new Error('countapi hit failed');
+  }
+
   async function countapiCreateIfMissing(){
     try{
-      await fetch(`https://api.countapi.xyz/create?namespace=${COUNT_NS}&key=${COUNT_KEY_OFFERS}&value=0`);
-      await fetch(`https://api.countapi.xyz/create?namespace=${COUNT_NS}&key=${COUNT_KEY_REFUSALS}&value=0`);
+      await countapiFetch(`/create?namespace=${COUNT_NS}&key=${COUNT_KEY_OFFERS}&value=0`);
+      await countapiFetch(`/create?namespace=${COUNT_NS}&key=${COUNT_KEY_REFUSALS}&value=0`);
     }catch(e){ /* ignore */ }
   }
   async function fetchGlobalTotals(){
     try{
       const [o,r] = await Promise.all([
-        fetch(`https://api.countapi.xyz/get/${COUNT_NS}/${COUNT_KEY_OFFERS}`).then(x=>x.json()).catch(()=>({value:0})),
-        fetch(`https://api.countapi.xyz/get/${COUNT_NS}/${COUNT_KEY_REFUSALS}`).then(x=>x.json()).catch(()=>({value:0})),
+        countapiFetch(`/get/${COUNT_NS}/${COUNT_KEY_OFFERS}`),
+        countapiFetch(`/get/${COUNT_NS}/${COUNT_KEY_REFUSALS}`)
       ]);
       G.global = {offers: Number(o?.value||0), refusals: Number(r?.value||0)};
       const og = document.getElementById('offerGlobal'); if(og) og.textContent = G.global.offers;
@@ -223,7 +248,13 @@
   }
   async function sendResult(kind){
     const key = kind==='offer' ? COUNT_KEY_OFFERS : COUNT_KEY_REFUSALS;
-    try{ await fetch(`https://api.countapi.xyz/hit/${COUNT_NS}/${key}`); }
+    try{
+      // убеждаемся, что ключи существуют
+      await countapiCreateIfMissing();
+      await countapiHit(`/hit/${COUNT_NS}/${key}`);
+      await fetchGlobalTotals();
+    }catch(e){ console.warn('countapi hit failed', e); }
+  }/${key}`); }
     catch(e){ console.warn('countapi hit failed', e); }
   }
 
@@ -484,7 +515,8 @@
   });
   // Auto-start
   restart();
-  fetchGlobalTotals();
+  // создаём ключи, если их ещё нет, и сразу тянем глобальную статистику
+  countapiCreateIfMissing().then(fetchGlobalTotals);
   </script>
 </body>
 </html>
