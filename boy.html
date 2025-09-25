@@ -68,6 +68,7 @@
       <div class="controls">
         <button id="restart">Новая партия</button>
         <button id="resetTotals" class="ghost">Сбросить общий счёт</button>
+        <button id="refreshGlobal" class="ghost">Обновить глобальные</button>
       </div>
     </header>
 
@@ -79,7 +80,7 @@
           <div class="chip"><span class="dot stage"></span> Этап: <span id="stageName">Телефон</span></div>
           <div class="chip"><span class="dot conf"></span> Офферы: <span id="offerSession">0</span> / <span id="offerTotal">0</span></div>
           <div class="chip"><span class="dot stress"></span> Отказы: <span id="refuseSession">0</span> / <span id="refuseTotal">0</span></div>
-          <div class="chip"><span class="dot stage"></span> 🌍 Глобально — офферы: <span id="offerGlobal">0</span>, отказы: <span id="refuseGlobal">0</span></div>
+          <div class="chip"><span class="dot stage"></span> 🌍 Глобально — офферы: <span id="offerGlobal">0</span>, отказы: <span id="refuseGlobal">0</span> <span id="netStatus" class="small" style="margin-left:8px;color:#a9b0d5"></span></div>
         </div>
         <div class="stagebar">
           <div class="stage"><span id="stageFill" style="width:0%"></span></div>
@@ -135,100 +136,30 @@
   </template>
 
   <script>
-  // ==== Глобальная статистика: CountAPI (супер-просто, без бэкенда) ====
-  // Документация: https://countapi.xyz
-  // Namespace можно назвать как угодно (лучше уникально):
-  const COUNT_NS = 'interview-card-game-public';
+  // ==== Глобальная статистика через CountAPI (без бэкенда) ====
+  const COUNT_NS = 'zer0ne-interview-card-game'; // любое уникальное имя для твоего проекта
   const COUNT_KEY_OFFERS = 'offers';
   const COUNT_KEY_REFUSALS = 'refusals';
+  const COUNT_BASES = ['https://api.countapi.xyz', 'https://countapi.xyz'];
 
-  const STAGES = ["Телефон", "HR", "Тех", "Финал"];
-  const MAX_CONF = 10;
-  const WIN_STRESS = 12; // преимущество рекрутера
-  const STORE_KEY = 'interview_game_stats_v1'; // локальные счётчики
-  const HAND_R = 3; // recruiter hand size
-  const HAND_C = 2; // candidate hand size
-
-  // --- Card factories ---
-  function recruiterDeck() {
-    return shuffle([
-      {id:'rq1', name:'Каверзный вопрос', type:'trick', text:'Почему вы ушли с прошлой работы?', effect:{dmg:2}},
-      {id:'rq2', name:'Каверзный вопрос', type:'trick', text:'Где вы видите себя через 5 лет?', effect:{dmg:2}},
-      {id:'rna1', name:'Неадекватное условие', type:'badcond', text:'Работа 24/7, но команда дружная!', effect:{dmg:3}},
-      {id:'rna2', name:'Неадекватное условие', type:'badcond', text:'Оплата ниже рынка, зато перспективы!', effect:{dmg:3}},
-      {id:'rt1', name:'Тестовое задание', type:'test', text:'Сделайте прототип за 40 часов', effect:{dmg:2}},
-      {id:'rt2', name:'Тестовое задание', type:'test', text:'20 страниц стратегии за выходные', effect:{dmg:2}},
-      {id:'rm1', name:'Манипуляция', type:'manip', text:'У нас супер-команда, надо соответствовать', effect:{dmg:1, stress:+1}},
-      {id:'rm2', name:'Манипуляция', type:'manip', text:'Мы ищем звезду, готовы ли пахать?', effect:{dmg:1, stress:+1}},
-      {id:'rf1', name:'Мы вам перезвоним', type:'calllater', text:'Ваш профиль интересный, мы свяжемся позже', effect:{fatal:true, needs:'charisma'}},
-      {id:'rf2', name:'Заморозка вакансии', type:'freeze', text:'Компания приостановила найм', effect:{fatal:true, needs:'excuse'}},
-    ]);
-  }
-
-  function candidateDeck() {
-    return shuffle([
-      {id:'cpa1', name:'Подготовленный ответ', type:'prep', text:'Ушёл ради развития и новых задач', counter:'trick', heal:2},
-      {id:'cpa2', name:'Подготовленный ответ', type:'prep', text:'Через 5 лет — у вас, на сильной роли', counter:'trick', heal:2},
-      {id:'cpf', name:'Опыт/портфолио', type:'portfolio', text:'Кейсы и результаты', counter:'test'},
-      {id:'cch', name:'Харизма', type:'charisma', text:'С вами было приятно общаться!', counter:'calllater'},
-      {id:'cex', name:'Отговорка', type:'excuse', text:'Кажется, вакансия не совсем моя…', counter:'any'},
-      {id:'cqq', name:'Вопрос в ответ', type:'question', text:'Как устроены процессы в команде?', action:{stress:-1}},
-    ]);
-  }
-
-  // --- Helpers ---
-  function shuffle(a){
-    const arr = a.slice();
-    for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]]}
-    return arr;
-  }
-
-  function el(q){return document.querySelector(q)}
-  function log(msg){ const p=document.createElement('p'); p.innerHTML=msg; el('#log').appendChild(p); el('#log').scrollTop = el('#log').scrollHeight; }
-  function cardEl(card, who){
-    const t = document.getElementById('tpl-card');
-    const node = t.content.firstElementChild.cloneNode(true);
-    node.querySelector('h4').textContent = card.name;
-    node.querySelector('p').textContent = card.text;
-    const b = node.querySelector('.badge');
-    b.textContent = who==='r' ? 'Рекрутер' : 'Соискатель';
-    b.classList.add(who==='r' ? 'recruiter' : 'candidate');
-    node.dataset.id = card.id;
-    return node;
-  }
-
-  // --- Persistent totals (local) ---
-  function loadTotals(){
-    try{ const t = JSON.parse(localStorage.getItem(STORE_KEY)||'{}'); return {totalOffers:t.totalOffers||0, totalRefusals:t.totalRefusals||0}; }catch(e){ return {totalOffers:0,totalRefusals:0}; }
-  }
-  function saveTotals(t){ localStorage.setItem(STORE_KEY, JSON.stringify(t)); }
-
-  // --- Network: global totals via CountAPI ---
-  const COUNT_BASES = ['https://api.countapi.xyz','https://countapi.xyz'];
-
-  async function countapiFetch(path){
-    let lastErr;
-    for(const base of COUNT_BASES){
-      try{
-        const r = await fetch(base + path, { cache:'no-store' });
-        if(r.ok) return await r.json();
-        lastErr = new Error('HTTP '+r.status);
-      }catch(e){ lastErr = e; }
+  async function countapiFetch(path) {
+    for (const base of COUNT_BASES) {
+      try {
+        const r = await fetch(base + path, { cache: 'no-store' });
+        if (r.ok) return await r.json();
+      } catch (e) { /* пробуем следующий */ }
     }
-    throw lastErr || new Error('countapi failed');
+    throw new Error('countapi fetch failed');
   }
-  async function countapiHit(path){
-    let lastErr;
-    for(const base of COUNT_BASES){
-      try{
-        const r = await fetch(base + path, { method:'GET' });
-        if(r.ok) return await r.json();
-        lastErr = new Error('HTTP '+r.status);
-      }catch(e){ lastErr = e; }
+  async function countapiHit(path) {
+    for (const base of COUNT_BASES) {
+      try {
+        const r = await fetch(base + path);
+        if (r.ok) return await r.json();
+      } catch (e) { /* пробуем следующий */ }
     }
-    throw lastErr || new Error('countapi hit failed');
+    throw new Error('countapi hit failed');
   }
-
   async function countapiCreateIfMissing(){
     try{
       await countapiFetch(`/create?namespace=${COUNT_NS}&key=${COUNT_KEY_OFFERS}&value=0`);
@@ -244,21 +175,78 @@
       G.global = {offers: Number(o?.value||0), refusals: Number(r?.value||0)};
       const og = document.getElementById('offerGlobal'); if(og) og.textContent = G.global.offers;
       const rg = document.getElementById('refuseGlobal'); if(rg) rg.textContent = G.global.refusals;
-    }catch(e){ console.warn('countapi fetch failed', e); }
+      setNetStatus('ok');
+    }catch(e){ console.warn('countapi fetch failed', e); setNetStatus('offline'); }
   }
   async function sendResult(kind){
     const key = kind==='offer' ? COUNT_KEY_OFFERS : COUNT_KEY_REFUSALS;
     try{
-      // убеждаемся, что ключи существуют
       await countapiCreateIfMissing();
       await countapiHit(`/hit/${COUNT_NS}/${key}`);
       await fetchGlobalTotals();
-    }catch(e){ console.warn('countapi hit failed', e); }
-  }/${key}`); }
-    catch(e){ console.warn('countapi hit failed', e); }
+    }catch(e){ console.warn('countapi hit failed', e); setNetStatus('offline'); }
+  }
+  function setNetStatus(state){
+    const el = document.getElementById('netStatus');
+    if(!el) return;
+    if(state==='ok'){ el.textContent = '• online'; el.style.color = '#8de1ff'; }
+    else if(state==='offline'){ el.textContent = '• offline'; el.style.color = '#ffcc99'; }
+    else { el.textContent = ''; }
   }
 
-  // --- Game State ---
+  // ==== Игра ====
+  const STAGES = ["Телефон", "HR", "Тех", "Финал"];
+  const MAX_CONF = 10;
+  const WIN_STRESS = 12; // преимущество рекрутера
+  const STORE_KEY = 'interview_game_stats_v1'; // локальные счётчики
+  const HAND_R = 3; // recruiter hand size
+  const HAND_C = 2; // candidate hand size
+
+  function recruiterDeck() {
+    return shuffle([
+      {id:'rq1', name:'Каверзный вопрос', type:'trick', text:'Почему вы ушли с прошлой работы?', effect:{dmg:2}},
+      {id:'rq2', name:'Каверзный вопрос', type:'trick', text:'Где вы видите себя через 5 лет?', effect:{dmg:2}},
+      {id:'rna1', name:'Неадекватное условие', type:'badcond', text:'Работа 24/7, но команда дружная!', effect:{dmg:3}},
+      {id:'rna2', name:'Неадекватное условие', type:'badcond', text:'Оплата ниже рынка, зато перспективы!', effect:{dmg:3}},
+      {id:'rt1', name:'Тестовое задание', type:'test', text:'Сделайте прототип за 40 часов', effect:{dmg:2}},
+      {id:'rt2', name:'Тестовое задание', type:'test', text:'20 страниц стратегии за выходные', effect:{dmg:2}},
+      {id:'rm1', name:'Манипуляция', type:'manip', text:'У нас супер-команда, надо соответствовать', effect:{dmg:1, stress:+1}},
+      {id:'rm2', name:'Манипуляция', type:'manip', text:'Мы ищем звезду, готовы ли пахать?', effect:{dmg:1, stress:+1}},
+      {id:'rf1', name:'Мы вам перезвоним', type:'calllater', text:'Ваш профиль интересный, мы свяжемся позже', effect:{fatal:true, needs:'charisma'}},
+      {id:'rf2', name:'Заморозка вакансии', type:'freeze', text:'Компания приостановила найм', effect:{fatal:true, needs:'excuse'}},
+    ]);
+  }
+  function candidateDeck() {
+    return shuffle([
+      {id:'cpa1', name:'Подготовленный ответ', type:'prep', text:'Ушёл ради развития и новых задач', counter:'trick', heal:2},
+      {id:'cpa2', name:'Подготовленный ответ', type:'prep', text:'Через 5 лет — у вас, на сильной роли', counter:'trick', heal:2},
+      {id:'cpf', name:'Опыт/портфолио', type:'portfolio', text:'Кейсы и результаты', counter:'test'},
+      {id:'cch', name:'Харизма', type:'charisma', text:'С вами было приятно общаться!', counter:'calllater'},
+      {id:'cex', name:'Отговорка', type:'excuse', text:'Кажется, вакансия не совсем моя…', counter:'any'},
+      {id:'cqq', name:'Вопрос в ответ', type:'question', text:'Как устроены процессы в команде?', action:{stress:-1}},
+    ]);
+  }
+
+  function shuffle(a){ const arr=a.slice(); for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]]} return arr; }
+  function el(q){return document.querySelector(q)}
+  function log(msg){ const p=document.createElement('p'); p.innerHTML=msg; el('#log').appendChild(p); el('#log').scrollTop = el('#log').scrollHeight; }
+  function cardEl(card, who){
+    const t = document.getElementById('tpl-card');
+    const node = t.content.firstElementChild.cloneNode(true);
+    node.querySelector('h4').textContent = card.name;
+    node.querySelector('p').textContent = card.text;
+    const b = node.querySelector('.badge');
+    b.textContent = who==='r' ? 'Рекрутер' : 'Соискатель';
+    b.classList.add(who==='r' ? 'recruiter' : 'candidate');
+    node.dataset.id = card.id;
+    return node;
+  }
+
+  function loadTotals(){
+    try{ const t = JSON.parse(localStorage.getItem(STORE_KEY)||'{}'); return {totalOffers:t.totalOffers||0, totalRefusals:t.totalRefusals||0}; }catch(e){ return {totalOffers:0,totalRefusals:0}; }
+  }
+  function saveTotals(t){ localStorage.setItem(STORE_KEY, JSON.stringify(t)); }
+
   const G = {
     stageIdx:0,
     confidence:MAX_CONF,
@@ -268,12 +256,9 @@
     currentRCard:null,
     awaitingResponse:false,
     over:false,
-    // session counters
     offersSession:0,
     refusalsSession:0,
-    // local totals
     totals: loadTotals(),
-    // global totals
     global: {offers:0, refusals:0}
   };
 
@@ -282,7 +267,6 @@
     el('#stress').textContent = G.stress;
     el('#stageName').textContent = STAGES[G.stageIdx];
     el('#stageFill').style.width = ((G.stageIdx)/ (STAGES.length)) * 100 + '%';
-    // counters
     const t = G.totals;
     const os = el('#offerSession'); if(os) os.textContent = G.offersSession;
     const rs = el('#refuseSession'); if(rs) rs.textContent = G.refusalsSession;
@@ -291,86 +275,41 @@
     const og = document.getElementById('offerGlobal'); if(og) og.textContent = G.global.offers;
     const rg = document.getElementById('refuseGlobal'); if(rg) rg.textContent = G.global.refusals;
 
-    // recruiter play zone
-    const rp = el('#recruiter-play'); rp.innerHTML='';
-    if(G.currentRCard){ rp.appendChild(cardEl(G.currentRCard,'r')); }
-
-    // candidate hand
+    const rp = el('#recruiter-play'); rp.innerHTML=''; if(G.currentRCard){ rp.appendChild(cardEl(G.currentRCard,'r')); }
     const ch = el('#candidate-hand'); ch.innerHTML='';
-    G.cHand.forEach(c=>{
-      const n = cardEl(c,'c');
-      if(G.awaitingResponse){
-        n.style.cursor='pointer';
-        n.addEventListener('click',()=> useCandidateCard(c));
-      } else {
-        n.style.opacity=.8;
-      }
-      ch.appendChild(n);
-    });
+    G.cHand.forEach(c=>{ const n = cardEl(c,'c'); if(G.awaitingResponse){ n.style.cursor='pointer'; n.addEventListener('click',()=> useCandidateCard(c)); } else { n.style.opacity=.8; } ch.appendChild(n); });
 
-    // action buttons
-    const ab = el('#actionButtons');
-    ab.innerHTML='';
-    if(G.awaitingResponse){
-      const pass = btn('Принять удар', ()=>{resolveRecruiterCard(null)}, 'danger');
-      ab.appendChild(pass);
-    } else if(!G.over) {
-      ab.appendChild(btn('Следующий ход', nextTurn, 'success'));
-    } else {
-      ab.appendChild(btn('Сыграть ещё', restart));
-    }
+    const ab = el('#actionButtons'); ab.innerHTML='';
+    if(G.awaitingResponse){ ab.appendChild(btn('Принять удар', ()=>{resolveRecruiterCard(null)}, 'danger')); }
+    else if(!G.over) { ab.appendChild(btn('Следующий ход', nextTurn, 'success')); }
+    else { ab.appendChild(btn('Сыграть ещё', restart)); }
   }
+  function btn(text, fn, kind){ const b=document.createElement('button'); b.textContent=text; b.className=kind||''; b.onclick=fn; return b; }
 
-  function btn(text, fn, kind){
-    const b=document.createElement('button'); b.textContent=text; b.className=kind||''; b.onclick=fn; return b;
-  }
-
-  // --- Deck management ---
   function draw(hand, deck, discard, n){
     for(let i=0;i<n;i++){
-      if(deck.length===0){
-        if(discard.length===0) break;
-        deck.push(...shuffle(discard.splice(0)));
-      }
+      if(deck.length===0){ if(discard.length===0) break; deck.push(...shuffle(discard.splice(0))); }
       hand.push(deck.shift());
     }
   }
+  function removeFromHand(hand, id){ const idx = hand.findIndex(c=>c.id===id); if(idx>=0) return hand.splice(idx,1)[0]; return null; }
 
-  function removeFromHand(hand, id){
-    const idx = hand.findIndex(c=>c.id===id); if(idx>=0) return hand.splice(idx,1)[0];
-    return null;
-  }
-
-  // --- AI choice (biased) ---
   function recruiterChoose(){
     const fatal = G.rHand.find(c=> (c.type==='calllater' && !candidateHas('charisma')) || (c.type==='freeze' && !candidateHas('excuse')));
     if(fatal) return fatal;
     const order = ['badcond','test','trick','manip','freeze','calllater'];
-    for(const t of order){
-      const found = G.rHand.find(c=>c.type===t);
-      if(found) return found;
-    }
+    for(const t of order){ const found = G.rHand.find(c=>c.type===t); if(found) return found; }
     return G.rHand[0];
   }
+  function candidateHas(type){ if(type==='excuse') return G.cHand.some(c=>c.type==='excuse'); if(type==='charisma') return G.cHand.some(c=>c.type==='charisma'); return false; }
 
-  function candidateHas(type){
-    if(type==='excuse') return G.cHand.some(c=>c.type==='excuse');
-    if(type==='charisma') return G.cHand.some(c=>c.type==='charisma');
-    return false;
-  }
-
-  // --- Turn flow ---
   function nextTurn(){
     if(G.over) return;
-    while(G.rHand.length < HAND_R) draw(G.rHand, G.rDeck, G.rDiscard, 1);
-    while(G.cHand.length < HAND_C) draw(G.cHand, G.cDeck, G.cDiscard, 1);
-
+    while(G.rHand.length < 3) draw(G.rHand, G.rDeck, G.rDiscard, 1);
+    while(G.cHand.length < 2) draw(G.cHand, G.cDeck, G.cDiscard, 1);
     const play = recruiterChoose();
-    G.currentRCard = play;
-    removeFromHand(G.rHand, play.id);
-    el('#recruiter-play').innerHTML='';
-    el('#recruiter-play').appendChild(cardEl(play,'r'));
-
+    G.currentRCard = play; removeFromHand(G.rHand, play.id);
+    el('#recruiter-play').innerHTML=''; el('#recruiter-play').appendChild(cardEl(play,'r'));
     G.awaitingResponse = true;
     log(`<b>Рекрутер</b> разыграл: <i>${play.name}</i> — ${play.text}`);
     updateUI();
@@ -379,112 +318,57 @@
   function useCandidateCard(card){
     if(!G.awaitingResponse) return;
     const rc = G.currentRCard;
-    const canCounter = card.type==='excuse' ||
-      (card.type==='prep' && rc.type==='trick') ||
-      (card.type==='portfolio' && rc.type==='test') ||
-      (card.type==='charisma' && rc.type==='calllater');
+    const canCounter = card.type==='excuse' || (card.type==='prep' && rc.type==='trick') || (card.type==='portfolio' && rc.type==='test') || (card.type==='charisma' && rc.type==='calllater');
 
     if(card.type==='question'){
       G.stress = Math.max(0, G.stress + (card.action.stress||0));
       log(`<b>Вы</b> сыграли «${card.name}»: стресс рекрутера ${card.action.stress}`);
-      G.cDiscard.push(removeFromHand(G.cHand, card.id));
-      updateUI();
-      return;
+      G.cDiscard.push(removeFromHand(G.cHand, card.id)); updateUI(); return;
     }
 
     if(canCounter){
       log(`<b>Вы</b> сыграли «${card.name}» и нейтрализовали карту рекрутера.`);
-      if(card.heal) {
-        G.confidence = Math.min(MAX_CONF, G.confidence + card.heal);
-        log(`Ваша уверенность восстановилась на +${card.heal}.`);
-      }
-      G.cDiscard.push(removeFromHand(G.cHand, card.id));
-      finishCombat('countered');
+      if(card.heal){ G.confidence = Math.min(MAX_CONF, G.confidence + card.heal); log(`Ваша уверенность восстановилась на +${card.heal}.`); }
+      G.cDiscard.push(removeFromHand(G.cHand, card.id)); finishCombat('countered');
     } else {
       log(`<span style="color:#ffb3b3">Карта «${card.name}» не помогла против «${rc.name}».</span>`);
-      G.cDiscard.push(removeFromHand(G.cHand, card.id));
-      resolveRecruiterCard(null);
+      G.cDiscard.push(removeFromHand(G.cHand, card.id)); resolveRecruiterCard(null);
     }
   }
 
   function resolveRecruiterCard(force){
     const rc = G.currentRCard; if(!rc) return;
     if(rc.effect.fatal && !force){
-      if(rc.type==='calllater' && candidateHas('charisma')){
-        log(`Рекрутер попытался сыграть «Мы вам перезвоним», но у вас есть «Харизма». Сыграйте её, чтобы отменить!`);
-        updateUI();
-        return;
-      }
-      if(rc.type==='freeze' && candidateHas('excuse')){
-        log(`Вакансия заморожена. «Отговорка» способна это единожды отменить.`);
-        updateUI();
-        return;
-      }
+      if(rc.type==='calllater' && candidateHas('charisma')){ log(`Рекрутер попытался сыграть «Мы вам перезвоним», но у вас есть «Харизма». Сыграйте её, чтобы отменить!`); updateUI(); return; }
+      if(rc.type==='freeze' && candidateHas('excuse')){ log(`Вакансия заморожена. «Отговорка» способна это единожды отменить.`); updateUI(); return; }
     }
-
-    const dmg = rc.effect.dmg||0;
-    const stress = rc.effect.stress||0;
+    const dmg = rc.effect.dmg||0; const stress = rc.effect.stress||0;
     if(dmg){ G.confidence = Math.max(0, G.confidence - dmg); }
     if(stress){ G.stress = Math.min(WIN_STRESS, G.stress + stress); }
-
-    if(rc.effect.fatal){
-      log(`<b>Фатальная карта!</b> ${rc.name}. Игра окончена.`);
-      endGame(false, rc.name);
-      return;
-    } else {
-      log(`Вы получаете ${dmg?`-${dmg} к уверенности`:''}${(dmg&&stress)?', ':''}${stress?`+${stress} к стрессу рекрутера`:''}.`);
-      G.rDiscard.push(rc); G.currentRCard=null; G.awaitingResponse=false;
-      if(G.confidence<=0){ endGame(false,'Вы выгорели'); return; }
-      const advance = Math.random()<0.7;
-      if(advance){
-        G.stageIdx++;
-        log(`<b>Этап завершён.</b> Вы переходите дальше.`);
-      } else {
-        log(`<i>Процесс затянулся...</i> Этап повторяется.`);
-      }
-      if(G.stageIdx>=STAGES.length){ endGame(true,'Оффер!'); return; }
-      if(Math.random()<0.15){
-        G.confidence = Math.max(0, G.confidence-1);
-        log(`<span style="color:#ffcc99">Корпоративный хаос:</span> потеря -1 уверенности на ровном месте.`);
-        if(G.confidence<=0){ endGame(false,'Вы выгорели'); return; }
-      }
-      G.stress = Math.max(0, G.stress - 1);
-      updateUI();
-    }
+    if(rc.effect.fatal){ log(`<b>Фатальная карта!</b> ${rc.name}. Игра окончена.`); endGame(false, rc.name); return; }
+    log(`Вы получаете ${dmg?`-${dmg} к уверенности`:''}${(dmg&&stress)?', ':''}${stress?`+${stress} к стрессу рекрутера`:''}.`);
+    G.rDiscard.push(rc); G.currentRCard=null; G.awaitingResponse=false;
+    if(G.confidence<=0){ endGame(false,'Вы выгорели'); return; }
+    const advance = Math.random()<0.7; if(advance){ G.stageIdx++; log(`<b>Этап завершён.</b> Вы переходите дальше.`); } else { log(`<i>Процесс затянулся...</i> Этап повторяется.`); }
+    if(G.stageIdx>=STAGES.length){ endGame(true,'Оффер!'); return; }
+    if(Math.random()<0.15){ G.confidence = Math.max(0, G.confidence-1); log(`<span style=\"color:#ffcc99\">Корпоративный хаос:</span> потеря -1 уверенности на ровном месте.`); if(G.confidence<=0){ endGame(false,'Вы выгорели'); return; } }
+    G.stress = Math.max(0, G.stress - 1); updateUI();
   }
 
-  function finishCombat(reason){
+  function finishCombat(){
     G.rDiscard.push(G.currentRCard); G.currentRCard=null; G.awaitingResponse=false;
     G.stress = Math.min(WIN_STRESS, G.stress + 1);
     log(`<b>Контратака успешна.</b> Стресс рекрутера +1.`);
-    if(Math.random()<0.85){
-      G.stageIdx++;
-      log(`<b>Этап завершён.</b> Вы переходите дальше.`);
-    } else {
-      log(`<i>Рекрутер запросил дополнительные интервью...</i>`);
-    }
+    if(Math.random()<0.85){ G.stageIdx++; log(`<b>Этап завершён.</b> Вы переходите дальше.`); } else { log(`<i>Рекрутер запросил дополнительные интервью...</i>`); }
     if(G.stageIdx>=STAGES.length){ endGame(true,'Оффер!'); return; }
     updateUI();
   }
 
   function endGame(playerWon, cause){
     G.over = true; G.awaitingResponse=false; G.currentRCard=null;
-    if(playerWon){
-      G.offersSession++;
-      G.totals.totalOffers++;
-      saveTotals(G.totals);
-      sendResult('offer').then(fetchGlobalTotals);
-      log(`<span style=\"color:#9dffc9\"><b>Вы победили!</b> ${cause}</span>`);
-    } else {
-      G.refusalsSession++;
-      G.totals.totalRefusals++;
-      saveTotals(G.totals);
-      sendResult('refusal').then(fetchGlobalTotals);
-      log(`<span style=\"color:#ffc1c1\"><b>Поражение.</b> ${cause}</span>`);
-    }
-    if(G.stress>=WIN_STRESS && playerWon===false){
-      log(`<span style=\"color:#cfe5ff\">Стресс рекрутера был высоким (${G.stress}), но судьба решила иначе.</span>`);
-    }
+    if(playerWon){ G.offersSession++; G.totals.totalOffers++; saveTotals(G.totals); sendResult('offer'); log(`<span style=\"color:#9dffc9\"><b>Вы победили!</b> ${cause}</span>`); }
+    else { G.refusalsSession++; G.totals.totalRefusals++; saveTotals(G.totals); sendResult('refusal'); log(`<span style=\"color:#ffc1c1\"><b>Поражение.</b> ${cause}</span>`); }
+    if(G.stress>=WIN_STRESS && !playerWon){ log(`<span style=\"color:#cfe5ff\">Стресс рекрутера был высоким (${G.stress}), но судьба решила иначе.</span>`); }
     updateUI();
   }
 
@@ -499,23 +383,21 @@
     });
     el('#log').innerHTML='';
     log('Начинается новая партия. Пройдите 4 этапа, не потеряв уверенность.');
-    draw(G.rHand, G.rDeck, G.rDiscard, HAND_R);
-    draw(G.cHand, G.cDeck, G.cDiscard, HAND_C);
+    draw(G.rHand, G.rDeck, G.rDiscard, 3);
+    draw(G.cHand, G.cDeck, G.cDiscard, 2);
     updateUI();
   }
 
   document.getElementById('restart').addEventListener('click', restart);
   document.getElementById('resetTotals').addEventListener('click', ()=>{
     if(confirm('Сбросить общий счёт офферов/отказов для всех игроков на этом устройстве?')){
-      G.totals = {totalOffers:0,totalRefusals:0};
-      saveTotals(G.totals);
-      updateUI();
-      log('Общий счёт очищен.');
+      G.totals = {totalOffers:0,totalRefusals:0}; saveTotals(G.totals); updateUI(); log('Общий счёт очищен.');
     }
   });
+  document.getElementById('refreshGlobal').addEventListener('click', ()=>{ fetchGlobalTotals(); });
+
   // Auto-start
   restart();
-  // создаём ключи, если их ещё нет, и сразу тянем глобальную статистику
   countapiCreateIfMissing().then(fetchGlobalTotals);
   </script>
 </body>
