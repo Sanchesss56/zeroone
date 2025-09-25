@@ -135,9 +135,12 @@
   </template>
 
   <script>
-  // ==== Настройки глобальной статистики (Google Apps Script) ====
-  // ВСТАВЬ сюда URL веб-приложения GAS, оканчивающийся на /exec
-  const GLOBAL_API = 'https://script.google.com/macros/s/AKfycbwFUzjbDUtNGBrADVlP12LrIwsPwlQFmgeDpI91ieZsFRAYnl5QpaYk4WCi8uCXYnEL/exec';
+  // ==== Глобальная статистика: CountAPI (супер-просто, без бэкенда) ====
+  // Документация: https://countapi.xyz
+  // Namespace можно назвать как угодно (лучше уникально):
+  const COUNT_NS = 'interview-card-game-public';
+  const COUNT_KEY_OFFERS = 'offers';
+  const COUNT_KEY_REFUSALS = 'refusals';
 
   const STAGES = ["Телефон", "HR", "Тех", "Финал"];
   const MAX_CONF = 10;
@@ -200,23 +203,28 @@
   }
   function saveTotals(t){ localStorage.setItem(STORE_KEY, JSON.stringify(t)); }
 
-  // --- Network: global totals via GAS ---
-  async function fetchGlobalTotals(){
-    if(!GLOBAL_API || GLOBAL_API.startsWith('PASTE_')) return; // не настроено
+  // --- Network: global totals via CountAPI ---
+  async function countapiCreateIfMissing(){
     try{
-      const r = await fetch(GLOBAL_API + '?t=' + Date.now(), { cache:'no-store' });
-      if(!r.ok) throw new Error('HTTP '+r.status);
-      const j = await r.json();
-      G.global = { offers: j.offers||0, refusals: j.refusals||0 };
+      await fetch(`https://api.countapi.xyz/create?namespace=${COUNT_NS}&key=${COUNT_KEY_OFFERS}&value=0`);
+      await fetch(`https://api.countapi.xyz/create?namespace=${COUNT_NS}&key=${COUNT_KEY_REFUSALS}&value=0`);
+    }catch(e){ /* ignore */ }
+  }
+  async function fetchGlobalTotals(){
+    try{
+      const [o,r] = await Promise.all([
+        fetch(`https://api.countapi.xyz/get/${COUNT_NS}/${COUNT_KEY_OFFERS}`).then(x=>x.json()).catch(()=>({value:0})),
+        fetch(`https://api.countapi.xyz/get/${COUNT_NS}/${COUNT_KEY_REFUSALS}`).then(x=>x.json()).catch(()=>({value:0})),
+      ]);
+      G.global = {offers: Number(o?.value||0), refusals: Number(r?.value||0)};
       const og = document.getElementById('offerGlobal'); if(og) og.textContent = G.global.offers;
       const rg = document.getElementById('refuseGlobal'); if(rg) rg.textContent = G.global.refusals;
-    }catch(e){ console.warn('fetchGlobalTotals failed', e); }
+    }catch(e){ console.warn('countapi fetch failed', e); }
   }
   async function sendResult(kind){
-    if(!GLOBAL_API || GLOBAL_API.startsWith('PASTE_')) return; // не настроено
-    try{
-      await fetch(GLOBAL_API, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kind }) });
-    }catch(e){ console.warn('sendResult failed', e); }
+    const key = kind==='offer' ? COUNT_KEY_OFFERS : COUNT_KEY_REFUSALS;
+    try{ await fetch(`https://api.countapi.xyz/hit/${COUNT_NS}/${key}`); }
+    catch(e){ console.warn('countapi hit failed', e); }
   }
 
   // --- Game State ---
